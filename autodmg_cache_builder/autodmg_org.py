@@ -2,12 +2,11 @@
 """These are the org-specific AutoDMG package building tools."""
 
 import os
-import sys
+import glob
 import tempfile
 import shutil
 
-from autodmg_utility import build_pkg, run, populate_ds_repo, pkgbuild
-sys.path.append('/Library/CPE/lib/flib/modules')
+from autodmg_utility import build_pkg, run, pkgbuild
 try:
   import FoundationPlist as plistlib
 except ImportError:
@@ -40,21 +39,58 @@ PKG_LIST = [
 ]
 
 
-def build_bare_dmg(source, cache, logpath, loglevel, repo_path):
-  """Build a bare OS DMG for Donation/bare usage."""
-  dmg_output_path = os.path.join(cache, 'Bare.hfs.dmg')
-  if os.path.isfile(dmg_output_path):
-    print "Donation image already found, not building.\n"
-    return
-  print "Creating AutoDMG-donation.adtmpl."
-  templatepath = os.path.join(cache, 'AutoDMG-bare.adtmpl')
+# Convenient functions
+def get_system_version(sys_root):
+  """Get the version and build number from a system root."""
+  system_version_plist = os.path.join(
+    sys_root,
+    'System',
+    'Library',
+    'CoreServices',
+    'SystemVersion.plist',
+  )
+  sys_version_data = plistlib.readPlist(system_version_plist)
+  return (
+    sys_version_data['ProductVersion'],
+    sys_version_data['ProductBuildVersion']
+  )
 
+
+def get_version_from_os_dmg(dmg_path):
+  """Get a system version from an OS dmg."""
+  (version, build) = (0, 0)
+  if os.path.isfile(dmg_path):
+    print "Mounting %s" % dmg_path
+    mountpoints = fs_tools.mountdmg(dmg_path)
+    if mountpoints:
+      (version, build) = get_system_version(mountpoints[0])
+      print "Found %s: %s" % (version, build)
+      print "Umounting dmg"
+      fs_tools.unmountdmg(mountpoints[0])
+      print "Done unmounting."
+  return (version, build)
+
+
+# Other DMG builds
+def build_bare_dmg(source, cache, logpath, loglevel, repo_path):
+  """Build a base OS DMG."""
+  dmg_output_path = os.path.join(cache, 'Base.hfs.dmg')
+  print "Looking for existing base image..."
+  base_os_dmg_matches = glob.glob(os.path.join(cache, 'Base*.hfs.dmg'))
+  (my_os_version, my_build) = get_system_version('/')
+  for os_dmg in base_os_dmg_matches:
+    (dmg_version, dmg_build) = get_version_from_os_dmg(os_dmg)
+    if dmg_version == my_os_version and dmg_build == my_build:
+      # The DMG we have built already matches.
+      print "Matching version base image already found, not building.\n"
+      return
+  print "Creating AutoDMG-bare.adtmpl."
+  templatepath = os.path.join(cache, 'AutoDMG-bare.adtmpl')
   plist = dict()
   plist["ApplyUpdates"] = True
   plist["SourcePath"] = source
   plist["TemplateFormat"] = "1.0"
   plist["VolumeName"] = "Macintosh HD"
-
   # Complete the AutoDMG-donation.adtmpl template
   plistlib.writePlist(plist, templatepath)
   autodmg_cmd = [
@@ -68,7 +104,7 @@ def build_bare_dmg(source, cache, logpath, loglevel, repo_path):
   logfile = os.path.join(logpath, 'bare.log')
 
   # Now kick off the AutoDMG build
-  print "Building bare image..."
+  print "Building base image..."
   if os.path.isfile(dmg_output_path):
     os.remove(dmg_output_path)
   cmd = autodmg_cmd + [
@@ -78,8 +114,14 @@ def build_bare_dmg(source, cache, logpath, loglevel, repo_path):
     '--download-updates',
     '-o', dmg_output_path]
   run(cmd)
-  print "Moving bare image to DS Repo."
-  populate_ds_repo(dmg_output_path, repo_path)
+  if os.path.exists(dmg_output_path):
+    print "Copying base image to DS Repo."
+    repo_hfs = os.path.join(repo_path, 'Masters', 'HFS')
+    shutil.copy2(dmg_output_path, repo_hfs)
+    target_name = "Base_%s.%s.hfs.dmg" % (my_os_version, my_build)
+    os.rename(dmg_output_path, os.path.join(cache, target_name))
+  else:
+    print "Failed to build base image!"
 
 
 # local management functions
